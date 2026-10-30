@@ -42,6 +42,6 @@ export ENABLE_TAGS_GENERATION=false
 export ENABLE_FOLLOW_UP_GENERATION=false
 export ENABLE_AUTOCOMPLETE_GENERATION=false
 
-export WEBUI_NAME="Freebuff Bridge"
+export WEBUI_NAME="Freebuff OWUI"
 
 exec .venv-owui/Scripts/open-webui.exe serve --host 0.0.0.0 --port 8080

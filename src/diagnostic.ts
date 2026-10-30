@@ -162,7 +162,7 @@ export function renderDiagnosticPage(snapshot: HealthSnapshot): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Freebuff Bridge — diagnostic</title>
+<title>Freebuff OWUI — diagnostic</title>
 <style>
   :root { color-scheme: light dark; }
   body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 2rem 1rem; }
@@ -177,7 +177,7 @@ export function renderDiagnosticPage(snapshot: HealthSnapshot): string {
 </head>
 <body>
   <main>
-    <h1>Freebuff Bridge</h1>
+    <h1>Freebuff OWUI</h1>
     <p>Diagnostic local — aucune CLI lancée pour cette page.</p>
     <dl>
 ${cells}

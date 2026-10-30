@@ -1,4 +1,4 @@
-# Freebuff Bridge
+# Freebuff OWUI
 
 A **local** bridge between the Freebuff CLI and OpenWebUI: OpenWebUI talks to the
 CLI as if it were an OpenAI backend, with no provider API in between.

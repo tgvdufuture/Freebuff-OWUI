@@ -1684,7 +1684,7 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
   })
 
   app.get('/', async () => ({
-    service: 'freebuff-bridge',
+    service: 'freebuff-owui',
     message: "Ce port est l'API du pont, pas l'interface. Ouvre OpenWebUI sur http://127.0.0.1:8080.",
     endpoints: {
       health: '/health',
@@ -2119,7 +2119,7 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
       id: m.id,
       object: 'model',
       created: 0,
-      owned_by: 'freebuff-bridge',
+      owned_by: 'freebuff-owui',
       name: m.name,
     })),
   }))
@@ -2259,8 +2259,8 @@ if (isMain) {
   console.log('')
   console.log(
     config.stub
-      ? '  Freebuff Bridge — mode stub (aucune CLI pilotée)'
-      : `  Freebuff Bridge — une session Freebuff par projet, ${String(config.maxSessions)} au plus`,
+      ? '  Freebuff OWUI — mode stub (aucune CLI pilotée)'
+      : `  Freebuff OWUI — une session Freebuff par projet, ${String(config.maxSessions)} au plus`,
   )
   console.log(`  Sessions      : ${String(config.maxSessions)} max (BRIDGE_MAX_SESSIONS)`)
   console.log(`  URL OpenWebUI : http://${config.host}:${config.port}/v1`)
