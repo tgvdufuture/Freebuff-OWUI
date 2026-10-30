@@ -1,0 +1,36 @@
+# Secrets et état local — jamais dans le dépôt
+data/*
+# Exception : la liste des modèles est du code de configuration, pas un secret.
+!data/models.json
+.webui_secret_key
+.env
+.env.*
+
+# Outils de l'agent (skills installées localement, pas du code produit)
+.agents/
+
+# Dépendances et environnements
+node_modules/
+.venv-owui/
+
+# Artefacts de travail
+.tmp/
+*.log
+# Copies de profils CLI créées par les sondes de quota : jamais dans le dépôt.
+sandbox/quota-probe/
+# Filet de sécurité : une copie de credentials ne doit jamais être ajoutée.
+credentials.json*
+device-key.json
+spike/s0/requests/
+spike/s1/results/
+spike/s6/raw.jsonl
+spike/s6/frames.jsonl
+spike/s7/raw.jsonl
+spike/s7/frames.jsonl
+spike/s8/raw.jsonl
+spike/s8/*.out
+spike/s9/*.out
+
+# Python
+__pycache__/
+*.pyc

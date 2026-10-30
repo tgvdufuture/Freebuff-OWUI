@@ -1,0 +1,33 @@
+{
+  "name": "freebuff-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local bridge between the Freebuff CLI and OpenWebUI, with no provider API.",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "start:all": "scripts\\start-all.cmd",
+    "dev": "node --watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "s0": "node src/server.ts",
+    "quota:preflight": "node scripts/quota-preflight.ts",
+    "recover": "node scripts/recover.ts",
+    "import:owui": "node scripts/import-owui.ts",
+    "check-owui": "node scripts/check-owui-card.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "^6.0.0",
+    "fastify": "^5.12.5",
+    "node-notifier": "^10.0.1",
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.0",
+    "typescript": "^5.9.3"
+  }
+}
