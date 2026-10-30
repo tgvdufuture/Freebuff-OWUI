@@ -1,7 +1,5 @@
 # Freebuff Bridge
 
-<a href="https://ko-fi.com/tgvdufuture?utm_source=github_readme&utm_medium=github&utm_campaign=donation"><img align="middle" alt="Support me on Ko-fi" src="https://ko-fi.com/img/githubbutton_sm.svg"></a>
-
 A **local** bridge between the Freebuff CLI and OpenWebUI: OpenWebUI talks to the
 CLI as if it were an OpenAI backend, with no provider API in between.
 
@@ -184,11 +182,6 @@ npm run check-owui # checks the OpenWebUI patch in headless Chrome
 
 `check-owui` exits `0` when the patch is compliant, `1` when it is not, and `2`
 when it cannot be verified (OpenWebUI or Chrome missing).
-
-## Support
-
-Freebuff Bridge is developed on my own time and given away for free. If it's useful
-to you, you can buy me a coffee: **[ko-fi.com/tgvdufuture](https://ko-fi.com/tgvdufuture?utm_source=github_readme&utm_medium=github&utm_campaign=donation)** ☕
 
 ## License
 
