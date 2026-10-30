@@ -63,6 +63,7 @@ import {
   ImportScheduler,
   importHealth,
   profileList,
+  readStore,
   runImport,
   type ImportHealth,
 } from './freebuff/importer.ts'
@@ -653,12 +654,49 @@ function textCompletion(
 }
 
 /**
+ * Projet d'un chat neuf créé DANS un dossier OWUI.
+ *
+ * OWUI enregistre `folder_id` avant d'envoyer le premier message. Le pont ne
+ * devine pas à partir du nom : seuls les dossiers créés par l'import
+ * (`projectFolders`) comptent, et le dossier du projet doit exister sous
+ * `projectsRoot`. Tout échec rend `null` : l'appelant garde le refus explicite
+ * « chat non lié », jamais un 500 pour un OWUI injoignable.
+ */
+async function projectFromOwuiFolder(chatId: string): Promise<string | null> {
+  const apiKey = resolveOwuiKey(config.dataDir)
+  if (apiKey === null) return null
+  try {
+    const folder = await createOwuiClient({
+      baseUrl: config.owuiBaseUrl,
+      apiKey,
+    }).chatFolder(chatId)
+    if (folder === null) return null
+
+    const store = readStore(path.join(config.dataDir, 'imports.json'))
+    const name = Object.entries(store.projectFolders).find(([, id]) => id === folder.id)?.[0]
+    if (name === undefined || name === '.' || name === '..' || /[\\/]/.test(name)) return null
+
+    const candidates = [
+      ...new Set(
+        config.projectsRoot
+          .map(root => normalizeProjectPath(path.join(root, name), config.projectsRoot))
+          .filter((verdict): verdict is { ok: true; path: string } => verdict.ok)
+          .map(verdict => verdict.path),
+      ),
+    ]
+    return candidates.length === 1 ? candidates[0]! : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Le premier message d'un chat décide de son projet.
  *
  * Modèle `freebuff-new` : le message EST un chemin. On le valide, on le range,
  * et on répond sans lancer la CLI — lier ne doit pas coûter un tour.
- * Tout autre modèle sur un chat non lié est refusé : deviner le projet serait
- * pire que demander.
+ * Tout autre modèle sur un chat non lié est refusé, sauf quand OWUI dit dans
+ * quel dossier de projet importé il a été créé (`folder_id`).
  */
 async function chatThroughBinding(
   host: SessionHost,
@@ -713,6 +751,25 @@ async function chatThroughBinding(
       journal.write('binding', { chatId: input.chatId, projectPath: bound, source: 'pending' })
     }
   }
+
+  // Conversation neuve créée dans un dossier de projet OWUI : le dossier est
+  // la seule indication du projet, et il est déjà écrit côté OWUI.
+  if (bound === null) {
+    const fromFolder = await projectFromOwuiFolder(input.chatId)
+    if (fromFolder !== null) {
+      try {
+        bindings.set(input.chatId, fromFolder)
+      } catch (error) {
+        return reply
+          .code(503)
+          .send(errorBody(error instanceof Error ? error.message : String(error), 'bindings_unreadable'))
+      }
+      bound = fromFolder
+      console.log(`[binding] chat=${input.chatId} projet=${fromFolder} (dossier OWUI)`)
+      journal.write('binding', { chatId: input.chatId, projectPath: fromFolder, source: 'owui_folder' })
+    }
+  }
+
   if (bound !== null) {
     // `/import` est une commande du pont : elle liste ou affiche une
     // conversation déjà faite, sans lancer la CLI et sans consommer de tour.

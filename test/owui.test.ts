@@ -109,6 +109,26 @@ test('un chat existant peut être rangé dans un dossier', async () => {
   assert.equal(calls[0]?.init.body, JSON.stringify({ folder_id: 'f1' }))
 })
 
+test('le dossier d’un chat est lu par son folder_id', async () => {
+  const { calls, fetchImpl } = recorder([
+    { body: { id: 'c1', folder_id: 'f1' } },
+    { body: { id: 'f1', name: 'Alpha' } },
+  ])
+  const client = createOwuiClient({ baseUrl: 'http://owui.test', apiKey: 'sk-test', fetchImpl })
+
+  assert.deepEqual(await client.chatFolder('c1'), { id: 'f1', name: 'Alpha' })
+  assert.match(calls[0]?.url ?? '', /\/api\/v1\/chats\/c1$/)
+  assert.match(calls[1]?.url ?? '', /\/api\/v1\/folders\/f1$/)
+})
+
+test('un chat hors dossier n’a pas de dossier OWUI', async () => {
+  const { calls, fetchImpl } = recorder([{ body: { id: 'c1', folder_id: null } }])
+  const client = createOwuiClient({ baseUrl: 'http://owui.test', apiKey: 'sk-test', fetchImpl })
+
+  assert.equal(await client.chatFolder('c1'), null)
+  assert.equal(calls.length, 1)
+})
+
 test('un refus d’authentification est une OwuiError typée', async () => {
   const { fetchImpl } = recorder([{ status: 401, body: { detail: 'Non autorisé' } }])
   const client = createOwuiClient({ baseUrl: 'http://owui.test', apiKey: 'sk-test', fetchImpl })

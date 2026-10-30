@@ -8,9 +8,11 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { renderQuestion, type AskPanel } from '../src/freebuff/ask.ts'
 import type { AgentSession, StopResult, TurnResult } from '../src/freebuff/session.ts'
 
@@ -33,8 +35,51 @@ writeFileSync(
   'utf8',
 )
 
+// Faux OWUI : le pont y lit le dossier d'un chat neuf pour en déduire le
+// projet. Toute autre route rend 404, donc les chats non liés des autres
+// tests restent refusés comme avant.
+const FOLDER_CHAT = 'chat-dossier-alpha'
+const FOREIGN_CHAT = 'chat-dossier-inconnu'
+const fakeOwui = createServer((request, response) => {
+  const pathname = new URL(request.url ?? '/', 'http://fake').pathname
+  const json = (body: unknown): void => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(body))
+  }
+  if (pathname === `/api/v1/chats/${FOLDER_CHAT}`) {
+    return json({ id: FOLDER_CHAT, folder_id: 'folder-alpha' })
+  }
+  if (pathname === `/api/v1/chats/${FOREIGN_CHAT}`) {
+    return json({ id: FOREIGN_CHAT, folder_id: 'folder-inconnu' })
+  }
+  if (pathname === '/api/v1/folders/folder-alpha') {
+    return json({ id: 'folder-alpha', name: 'alpha' })
+  }
+  if (pathname === '/api/v1/folders/folder-inconnu') {
+    return json({ id: 'folder-inconnu', name: 'beta' })
+  }
+  response.writeHead(404, { 'content-type': 'application/json' })
+  response.end(JSON.stringify({ detail: 'not found' }))
+})
+await new Promise<void>(resolve => fakeOwui.listen(0, '127.0.0.1', resolve))
+
+writeFileSync(
+  path.join(dataDir, 'imports.json'),
+  JSON.stringify({
+    version: 1,
+    folders: {},
+    projectFolders: { alpha: 'folder-alpha' },
+    items: {},
+    pending: null,
+    lastRun: null,
+  }),
+  'utf8',
+)
+
 process.env.BRIDGE_STUB = '0'
 process.env.BRIDGE_DATA_DIR = dataDir
+process.env.BRIDGE_OWUI_URL = `http://127.0.0.1:${(fakeOwui.address() as AddressInfo).port}`
+process.env.BRIDGE_OWUI_KEY = 'sk-test'
 process.env.BRIDGE_API_KEY = 'test-key'
 process.env.BRIDGE_CAPTURE_DIR = captureDir
 process.env.BRIDGE_PROJECTS_ROOT = projectsRoot
@@ -45,6 +90,10 @@ process.env.BRIDGE_PROFILE_DIR = profileDir
 process.env.BRIDGE_ASK_CARD = '1'
 
 const { buildServer } = await import('../src/server.ts')
+
+after(async () => {
+  await new Promise<void>(resolve => fakeOwui.close(() => resolve()))
+})
 
 const AUTH = { authorization: 'Bearer test-key' }
 const ALPHA = path.join(projectsRoot, 'alpha').replace(/\\/g, '/')
@@ -1555,4 +1604,40 @@ test('un binding survit au redémarrage du pont', async () => {
   assert.deepEqual(FakeSession.opened, [ALPHA])
 
   await second.close()
+})
+
+test('un chat neuf créé dans un dossier OWUI importé est lié au projet du dossier', async () => {
+  resetSettings()
+  FakeSession.opened = []
+  const app = makeApp(path.join(dataDir, 'bindings-owui-folder.json'))
+
+  const response = await post(app, FOLDER_CHAT, 'bonjour')
+
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(FakeSession.opened, [ALPHA])
+  assert.match(contentOf(response.body), /tour dans/)
+
+  const binding = await app.inject({
+    method: 'GET',
+    url: `/api/bind?chatId=${FOLDER_CHAT}`,
+    headers: AUTH,
+  })
+  assert.equal(binding.statusCode, 200)
+  assert.equal((JSON.parse(binding.body) as { projectPath: string }).projectPath, ALPHA)
+
+  await app.close()
+})
+
+test('un dossier OWUI créé hors import ne lie aucun projet', async () => {
+  resetSettings()
+  FakeSession.opened = []
+  const app = makeApp(path.join(dataDir, 'bindings-owui-folder-foreign.json'))
+
+  const response = await post(app, FOREIGN_CHAT, 'bonjour')
+
+  assert.equal(response.statusCode, 400)
+  assert.equal(codeOf(response.body), 'chat_unbound')
+  assert.deepEqual(FakeSession.opened, [])
+
+  await app.close()
 })

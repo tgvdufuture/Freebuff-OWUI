@@ -69,6 +69,11 @@ export interface OwuiFolderInfo {
   meta: Record<string, unknown> | null
 }
 
+export interface OwuiFolderRef {
+  id: string
+  name: string
+}
+
 export interface OwuiChatSummary {
   id: string
   title: string
@@ -81,6 +86,8 @@ export interface OwuiClient {
   ensureFolder(name: string): Promise<string>
   /** Tous les dossiers de l'utilisateur, métadonnées comprises. */
   listFolders(): Promise<OwuiFolderInfo[]>
+  /** Dossier qui contient ce chat, ou `null` s'il n'est rangé nulle part. */
+  chatFolder(id: string): Promise<OwuiFolderRef | null>
   /**
    * Écrit `lastActivity` (epoch secondes) dans `meta` du dossier ; OWUI fusionne
    * les clés, donc l'icône et le reste sont conservés.
@@ -152,6 +159,18 @@ export function createOwuiClient(options: {
   return {
     async listFolders() {
       return folders()
+    },
+
+    async chatFolder(id) {
+      const chat = await request<{ folder_id?: unknown }>(
+        `/api/v1/chats/${encodeURIComponent(id)}`,
+      )
+      if (typeof chat.folder_id !== 'string' || chat.folder_id === '') return null
+      const folder = await request<{ id?: unknown; name?: unknown }>(
+        `/api/v1/folders/${encodeURIComponent(chat.folder_id)}`,
+      )
+      if (typeof folder.id !== 'string' || typeof folder.name !== 'string') return null
+      return { id: folder.id, name: folder.name }
     },
 
     async updateFolderMeta(id, meta) {

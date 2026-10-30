@@ -76,6 +76,10 @@ class FakeOwui implements OwuiClient {
     return this.folders.map(folder => ({ ...folder }))
   }
 
+  async chatFolder() {
+    return null
+  }
+
   async updateFolderMeta(id: string, meta: Record<string, unknown>): Promise<void> {
     const folder = this.folders.find(item => item.id === id)
     if (folder === undefined) throw new Error(`dossier inconnu : ${id}`)
