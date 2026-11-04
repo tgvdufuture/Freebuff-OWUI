@@ -130,8 +130,16 @@ class StoppedSession implements AgentSession {
   }
 }
 
+let appCount = 0
+
 function makeApp(create: (dir: string) => AgentSession) {
-  return buildServer({ openSession: async dir => create(dir) })
+  return buildServer({
+    openSession: async dir => create(dir),
+    // Un fichier par application : le tour SSE abandonné du test 2 continue en
+    // arrière-plan et réécrit sa mémoire. Partagé, il écrasait un instantané
+    // plus récent et le message suivant recevait 400 `chat_unbound`.
+    bindingsFile: path.join(dataDir, `bindings-${String(++appCount)}.json`),
+  })
 }
 
 async function bind(app: ReturnType<typeof makeApp>, chatId: string): Promise<void> {
