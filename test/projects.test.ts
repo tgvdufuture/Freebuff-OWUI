@@ -14,13 +14,13 @@ writeFileSync(path.join(root, 'fichier.txt'), 'x', 'utf8')
 
 const roots = [root.replace(/\\/g, '/')]
 
-test('sans chemin, l’explorateur part de la racine et ne remonte pas au-dessus', () => {
+test('sans chemin, l’explorateur part de la racine et expose son parent', () => {
   const verdict = browseProjects(undefined, roots)
   assert.equal(verdict.ok, true)
   if (!verdict.ok) return
 
   assert.equal(verdict.browse.path, roots[0])
-  assert.equal(verdict.browse.parent, null)
+  assert.equal(verdict.browse.parent, path.dirname(root).replace(/\\/g, '/'))
   assert.deepEqual(
     verdict.browse.dirs.map(dir => dir.name),
     ['alpha', 'Beta'],
@@ -39,11 +39,19 @@ test('un sous-dossier expose son parent et ses propres dossiers', () => {
   )
 })
 
-test('un chemin hors racine est refusé', () => {
+test('un chemin hors du point de départ s’ouvre quand même', () => {
   const outside = mountSibling()
   const verdict = browseProjects(outside, roots)
-  assert.equal(verdict.ok, false)
-  if (!verdict.ok) assert.match(verdict.reason, /hors des racines/)
+  assert.equal(verdict.ok, true)
+  if (!verdict.ok) return
+  assert.equal(verdict.browse.path, path.resolve(outside).replace(/\\/g, '/'))
+})
+
+test('sans point de départ, l’explorateur part du dossier de l’utilisateur', () => {
+  const verdict = browseProjects(undefined, [])
+  assert.equal(verdict.ok, true)
+  if (!verdict.ok) return
+  assert.equal(verdict.browse.path, path.resolve(os.homedir()).replace(/\\/g, '/'))
 })
 
 test('un chemin avec « .. » ou un dossier absent est refusé', () => {

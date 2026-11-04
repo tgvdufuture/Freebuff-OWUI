@@ -76,6 +76,22 @@ test('le quota épuisé prend le pas sur les autres refus', () => {
   assert.equal(classifyRefusal(screen), 'quota_exhausted')
 })
 
+test('un compte à 0 h n’arrête pas une session dont l’heure déjà payée court encore', () => {
+  // Réel : le bandeau du compte tombe à 0 pendant l'heure, et le pont écrit
+  // lui-même `0/N hours daily` en relisant `/model`.
+  const screen = '1/12 hours remaining\nFREE · 0/12 hours daily · resets in 2h 13m\n╯ 42m left'
+  // Une TUI neuve (sonde, démarrage) n'a pas d'heure en cours : 0 h bloque.
+  assert.equal(classifyRefusal(screen), 'quota_exhausted')
+  assert.equal(classifyRefusal(screen, { hourLeftMinutes: 42 }), null)
+})
+
+test('une heure écoulée rend le quota épuisé de nouveau bloquant', () => {
+  // Le texte `42m left` peut traîner dans le tampon : c'est l'heure
+  // extrapolée qui décide, pas une ligne périmée.
+  const screen = '0/12 hours daily · resets in 2h 13m\n╯ 42m left'
+  assert.equal(classifyRefusal(screen, { hourLeftMinutes: 0 }), 'quota_exhausted')
+})
+
 test('la limite de sessions est reconnue', () => {
   assert.equal(
     classifyRefusal('Your concurrent-session limit across CLI and Desktop is reached'),

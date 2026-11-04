@@ -2,11 +2,12 @@
  * Explorateur de dossiers pour le sélecteur de projet.
  *
  * Le navigateur ne peut pas ouvrir un vrai « finder » ni lire un chemin
- * absolu ; c'est donc le pont qui liste les dossiers, et seulement sous
- * `projectsRoot`. Aucune écriture, aucune création : on ne propose que ce qui
- * existe déjà.
+ * absolu ; c'est donc le pont qui liste les dossiers. `projectsRoot` n'est
+ * qu'un point de départ : tout dossier absolu existant peut être ouvert.
+ * Aucune écriture, aucune création : on ne propose que ce qui existe déjà.
  */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { normalizeProjectPath } from './bindings.ts'
 
@@ -53,35 +54,37 @@ function subdirectories(dir: string): ProjectFolder[] {
 }
 
 /**
- * Liste les dossiers d'un chemin, sous les racines autorisées.
+ * Premier dossier existant parmi les points de départ : `projectsRoot`, sinon
+ * le dossier de l'utilisateur, sinon la racine du disque.
+ */
+function startDirectory(roots: string[], isDirectory: (dir: string) => boolean): string {
+  for (const root of roots) {
+    if (isDirectory(root)) return root
+  }
+  const home = os.homedir()
+  return isDirectory(home) ? home : path.parse(process.cwd()).root
+}
+
+/**
+ * Liste les dossiers d'un chemin.
  *
- * Sans chemin, on part de la première racine — le point d'entrée du sélecteur.
- * Une racine peut remonter jusqu'à elle-même, jamais au-dessus.
+ * Sans chemin, on part du premier point de départ configuré. `projectsRoot`
+ * ne limite rien : n'importe quel dossier absolu existant peut être ouvert et
+ * remonter jusqu'à la racine du disque.
  */
 export function browseProjects(
   input: string | undefined,
   roots: string[],
   isDirectory: (dir: string) => boolean = defaultIsDirectory,
 ): BrowseVerdict {
-  const root = roots[0]
-  if (root === undefined) {
-    return { ok: false, reason: 'aucune racine de projets configurée (BRIDGE_PROJECTS_ROOT).' }
-  }
-
-  const target = input === undefined || input.trim() === '' ? root : input.trim()
-  const verdict = normalizeProjectPath(target, roots, isDirectory)
+  const target =
+    input === undefined || input.trim() === '' ? startDirectory(roots, isDirectory) : input.trim()
+  const verdict = normalizeProjectPath(target, isDirectory)
   if (!verdict.ok) return verdict
 
   const resolved = path.resolve(verdict.path)
-  const insideRoot = roots.some(candidate => {
-    const rel = path.relative(path.resolve(candidate), resolved)
-    return rel === '' || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`))
-  })
-  if (!insideRoot) return { ok: false, reason: `« ${resolved} » est hors des racines autorisées.` }
-
-  const parent = roots.some(candidate => path.resolve(candidate) === resolved)
-    ? null
-    : path.dirname(resolved).replace(/\\/g, '/')
+  const parent =
+    path.parse(resolved).root === resolved ? null : path.dirname(resolved).replace(/\\/g, '/')
 
   return {
     ok: true,

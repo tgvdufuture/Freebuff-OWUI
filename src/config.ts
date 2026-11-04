@@ -78,11 +78,11 @@ export function importIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_IMPORT_INTERVAL_MS
 }
 
-/** Sessions vivantes simultanées par défaut (une par projet, mesuré en S12). */
+/** Sessions vivantes simultanées par défaut, PAR COMPTE (une par projet, mesuré en S12). */
 const DEFAULT_SESSION_LIMIT = 3
 
 /**
- * Combien de sessions vivantes le pont accepte d'ouvrir.
+ * Combien de sessions vivantes le pont accepte d'ouvrir PAR COMPTE.
  *
  * Une valeur absente ou invalide retombe sur 3 : une limite à `NaN` ne
  * refuserait jamais rien, donc autant ne pas la laisser passer.
@@ -111,9 +111,9 @@ export const config = {
   captureDir: process.env.BRIDGE_CAPTURE_DIR ?? path.join(projectRoot, 'spike', 's0', 'requests'),
 
   /**
-   * Sessions Freebuff vivantes simultanées (une par projet). Chaque session
-   * ouverte coûte une heure de quota : la limite évite d'en ouvrir une de plus
-   * sans que personne ne l'ait demandé.
+   * Sessions Freebuff vivantes simultanées PAR COMPTE (une par projet). Chaque
+   * session ouverte coûte une heure de quota : la limite évite d'en ouvrir une
+   * de plus sans que personne ne l'ait demandé.
    */
   maxSessions: sessionLimit(),
 
@@ -156,10 +156,11 @@ export const config = {
   importIntervalMs: importIntervalMs(),
 
   /**
-   * Racines sous lesquelles un chat peut lier un projet. Une liste, parce que
-   * les dépôts ne vivent pas forcément tous au même endroit. Par défaut
-   * `D:/code`, l'emplacement documenté dans le PRD ; `BRIDGE_PROJECTS_ROOT`
-   * (séparé par `;` sous Windows, `:` ailleurs) remplace la liste.
+   * Points de départ du sélecteur de projet, et bases de recherche du nom de
+   * dossier OWUI. Ils ne limitent rien : tout dossier absolu existant peut
+   * être lié. Par défaut `D:/code` ; `BRIDGE_PROJECTS_ROOT` (séparé par `;`
+   * sous Windows, `:` ailleurs) remplace la liste. Liste vide = dossier de
+   * l'utilisateur.
    */
   projectsRoot: (process.env.BRIDGE_PROJECTS_ROOT ?? 'D:/code')
     .split(path.delimiter)

@@ -99,6 +99,12 @@ const AUTH = { authorization: 'Bearer test-key' }
 const ALPHA = path.join(projectsRoot, 'alpha').replace(/\\/g, '/')
 const BETA = path.join(projectsRoot, 'beta').replace(/\\/g, '/')
 const GAMMA = path.join(projectsRoot, 'gamma').replace(/\\/g, '/')
+// Hors de BRIDGE_PROJECTS_ROOT : doit quand même pouvoir être lié.
+const OUTSIDE = path.join(
+  mkdtempSync(path.join(os.tmpdir(), 'fb-projects-outside-')),
+  'hors-code',
+).replace(/\\/g, '/')
+mkdirSync(OUTSIDE)
 
 /** Session factice : elle note le projet avec lequel elle a été ouverte. */
 class FakeSession implements AgentSession {
@@ -237,6 +243,27 @@ test('un chemin invalide renvoie 400 avec les projets récents et ne lie rien', 
   // Le chat fautif n'est pas lié : un message normal est refusé.
   const after = await post(app, 'chat-ko', 'bonjour')
   assert.equal(after.statusCode, 400)
+
+  await app.close()
+})
+
+test('un projet hors de projectsRoot est accepté et ouvre sa session', async () => {
+  resetSettings()
+  FakeSession.opened = []
+  const app = makeApp(path.join(dataDir, 'bindings-outside.json'))
+
+  const bind = await app.inject({
+    method: 'POST',
+    url: '/api/bind',
+    headers: AUTH,
+    payload: { chatId: 'chat-externe', projectPath: OUTSIDE },
+  })
+  assert.equal(bind.statusCode, 200)
+
+  const response = await post(app, 'chat-externe', 'bonjour')
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(FakeSession.opened, [OUTSIDE])
+  assert.match(contentOf(response.body), /tour dans/)
 
   await app.close()
 })

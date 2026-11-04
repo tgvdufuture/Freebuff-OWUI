@@ -47,6 +47,8 @@ beforeEach(() => {
   rmSync(path.join(dataDir, 'profiles.json'), { force: true })
   rmSync(path.join(dataDir, 'quota.json'), { force: true })
   sent.length = 0
+  opened.length = 0
+  openedProfiles.length = 0
 })
 
 /** Tout ce que les sessions factices ont réellement reçu, dans l'ordre. */
@@ -81,14 +83,20 @@ class FakeSession implements AgentSession {
 }
 
 const opened: string[] = []
+/** Le profil de chaque CLI ouverte, dans le même ordre que `opened`. */
+const openedProfiles: string[] = []
 
-const makeApp = (options: { session?: (projectDir: string) => AgentSession; bindings?: string } = {}) =>
+const makeApp = (
+  options: { session?: (projectDir: string) => AgentSession; bindings?: string; maxSessions?: number } = {},
+) =>
   buildServer({
     bindingsFile: options.bindings ?? path.join(dataDir, `bindings-${String(Date.now())}.json`),
-    openSession: async projectDir => {
+    openSession: async (projectDir, _continueRef, profileDir) => {
       opened.push(projectDir)
+      openedProfiles.push(profileDir)
       return options.session === undefined ? new FakeSession(projectDir) : options.session(projectDir)
     },
+    maxSessions: options.maxSessions,
     quotaProbe: async () => {
       throw new Error('la bascule ne doit pas sonder la CLI')
     },
@@ -116,7 +124,7 @@ const turnWith = (
   app: App,
   chatId: string,
   messages: Array<{ role: string; content: string }>,
-): Promise<{ statusCode: number }> =>
+): Promise<{ statusCode: number; json: () => unknown }> =>
   app.inject({
     method: 'POST',
     url: '/v1/chat/completions',
@@ -124,7 +132,11 @@ const turnWith = (
     payload: { model: 'freebuff-deepseek-v4-flash', stream: false, messages },
   })
 
-const turn = (app: App, chatId: string, prompt = 'travaille'): Promise<{ statusCode: number }> =>
+const turn = (
+  app: App,
+  chatId: string,
+  prompt = 'travaille',
+): Promise<{ statusCode: number; json: () => unknown }> =>
   turnWith(app, chatId, [{ role: 'user', content: prompt }])
 
 const switchTo = (app: App, dir: string) =>
@@ -133,7 +145,7 @@ const switchTo = (app: App, dir: string) =>
 const health = async (app: App) =>
   (await app.inject({ method: 'GET', url: '/health' })).json() as {
     profileDir: { path: string }
-    sessions: unknown[]
+    sessions: Array<{ account?: string }>
   }
 
 test('la liste reprend les mesures du lancement et marque le profil courant', async () => {
@@ -214,12 +226,14 @@ test('sans mesures de lancement, les profils voisins sont proposés sans heures'
   await app.close()
 })
 
-test('la bascule ferme les CLI et le tour suivant s’ouvre sur le nouveau profil', async () => {
+test('la bascule laisse vivre la CLI de l’ancien compte et ouvre les suivantes sur le nouveau', async () => {
   const app = makeApp()
   await bind(app, 'chat-switch')
+  await bind(app, 'chat-neuf')
   assert.equal((await turn(app, 'chat-switch')).statusCode, 200)
   const before = await health(app)
   assert.equal(before.sessions.length, 1)
+  assert.equal(before.sessions[0]?.account, profileA)
   assert.ok(existsSync(path.join(profileA, 'settings.json')), 'le modèle a été écrit chez A')
 
   const response = await switchTo(app, profileB)
@@ -228,30 +242,45 @@ test('la bascule ferme les CLI et le tour suivant s’ouvre sur le nouveau profi
   const body = response.json() as { ok: boolean; changed: boolean; stopped: number }
   assert.equal(body.ok, true)
   assert.equal(body.changed, true)
-  assert.equal(body.stopped, 1, 'la CLI de l’ancien compte est fermée')
+  assert.equal(body.stopped, 0, 'aucune CLI n’a été fermée')
 
   const after = await health(app)
   assert.equal(after.profileDir.path, profileB)
-  assert.deepEqual(after.sessions, [], 'plus aucune CLI sur l’ancien profil')
+  assert.deepEqual(
+    after.sessions.map(session => session.account),
+    [profileA],
+    'la CLI du tour garde son compte',
+  )
 
-  // Le message suivant ouvre une session qui écrit dans le settings du NOUVEAU profil.
+  // Le chat déjà ouvert continue DANS sa session : aucune CLI de plus.
   assert.equal((await turn(app, 'chat-switch', 'continue')).statusCode, 200)
-  assert.equal(opened.length, 2, 'une seconde CLI a été ouverte')
+  assert.equal(opened.length, 1)
+
+  // Un chat neuf ouvre une session sur le NOUVEAU compte, et écrit chez lui.
+  assert.equal((await turn(app, 'chat-neuf')).statusCode, 200)
+  assert.equal(opened.length, 2)
+  assert.equal(openedProfiles[1], profileB)
   const written = JSON.parse(readFileSync(path.join(profileB, 'settings.json'), 'utf8')) as {
     freebuffModel?: string
   }
   assert.equal(written.freebuffModel, 'deepseek/deepseek-v4-flash')
+  assert.deepEqual(
+    (await health(app)).sessions.map(session => session.account),
+    [profileA, profileB],
+  )
 
   await app.close()
 })
 
-test('après une bascule, la CLI neuve rejoue le fil de la conversation', async () => {
+test('après une bascule, une CLI neuve rejoue le fil de la conversation', async () => {
   const app = makeApp()
   await bind(app, 'chat-thread')
   assert.equal((await turn(app, 'chat-thread', 'Écris le PRD.')).statusCode, 200)
   assert.equal((await switchTo(app, profileB)).statusCode, 200)
 
-  const response = await turnWith(app, 'chat-thread', [
+  // Une conversation NEUVE pour le pont : c'est elle qui ouvre une CLI ailleurs.
+  await bind(app, 'chat-thread-b')
+  const response = await turnWith(app, 'chat-thread-b', [
     { role: 'user', content: 'Écris le PRD.' },
     { role: 'assistant', content: 'PRD v1.2 écrit.' },
     { role: 'user', content: 'Continue et commit.' },
@@ -279,7 +308,7 @@ test('sans bascule, la session en cours ne reçoit que la nouvelle consigne', as
   await app.close()
 })
 
-test('un tour en cours refuse la bascule et ne change rien', async () => {
+test('un tour en cours n’empêche plus la bascule et finit sur son compte', async () => {
   /** `release` n'est posé QUE quand le tour est réellement en vol. */
   let release: (() => void) | null = null
   class HeldSession extends FakeSession {
@@ -304,13 +333,15 @@ test('un tour en cours refuse la bascule et ne change rien', async () => {
 
   const response = await switchTo(app, profileB)
 
-  assert.equal(response.statusCode, 409)
-  assert.equal((response.json() as { error: { code: string } }).error.code, 'profile_switch_busy')
-  assert.equal((await health(app)).profileDir.path, profileA, 'profil inchangé')
-  assert.equal((await health(app)).sessions.length, 1, 'la CLI du tour reste ouverte')
+  assert.equal(response.statusCode, 200)
+  assert.equal((await health(app)).profileDir.path, profileB, 'le compte courant a changé')
+  const sessions = (await health(app)).sessions
+  assert.equal(sessions.length, 1, 'la CLI du tour reste ouverte')
+  assert.equal(sessions[0]?.account, profileA)
 
   finish()
-  await pending
+  assert.equal((await pending).statusCode, 200, 'le tour va au bout')
+
   await app.close()
 })
 
@@ -365,22 +396,28 @@ test('la lecture de quota de l’ancien compte ne survit pas à la bascule', asy
   await app.close()
 })
 
-test('une CLI qui survit à taskkill laisse le profil inchangé', async () => {
-  class StuckSession extends FakeSession {
-    stop(): StopResult {
-      return { ok: false, remaining: true }
-    }
-  }
+test('la limite de sessions est PAR COMPTE : chaque compte a ses propres slots', async () => {
+  const app = makeApp({ maxSessions: 1 })
+  await bind(app, 'chat-lim-a')
+  await bind(app, 'chat-lim-a2')
+  await bind(app, 'chat-lim-b')
+  await bind(app, 'chat-lim-b2')
 
-  const app = makeApp({ session: projectDir => new StuckSession(projectDir) })
-  await bind(app, 'chat-stuck')
-  assert.equal((await turn(app, 'chat-stuck')).statusCode, 200)
+  assert.equal((await turn(app, 'chat-lim-a')).statusCode, 200)
+  // Compte A plein : une session de plus sur A est refusée.
+  assert.equal((await turn(app, 'chat-lim-a2')).statusCode, 429)
 
-  const response = await switchTo(app, profileB)
+  assert.equal((await switchTo(app, profileB)).statusCode, 200)
+  // Le compte B n'hérite pas de la session de A : il a son propre slot.
+  assert.equal((await turn(app, 'chat-lim-b')).statusCode, 200)
+  assert.deepEqual(openedProfiles, [profileA, profileB])
 
-  assert.equal(response.statusCode, 409)
-  assert.equal((response.json() as { error: { code: string } }).error.code, 'profile_switch_stuck')
-  assert.equal((await health(app)).profileDir.path, profileA, 'on n’a pas changé de compte')
+  // Puis B est plein à son tour.
+  const full = await turn(app, 'chat-lim-b2')
+  assert.equal(full.statusCode, 429)
+  assert.equal((full.json() as { error: { code: string } }).error.code, 'too_many_sessions')
+  // La session de A répond toujours.
+  assert.equal((await turn(app, 'chat-lim-a', 'encore')).statusCode, 200)
 
   await app.close()
 })

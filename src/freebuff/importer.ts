@@ -86,7 +86,7 @@ export interface Candidate {
   projectDir: string
   /** Chemin brut lu dans `run-state.json` : sert au NOM, même hors racines. */
   projectRoot: string | null
-  /** Chemin validé sous `projectsRoot`, ou `null` (archive seule). */
+  /** Chemin validé (dossier existant), ou `null` (archive seule). */
   projectPath: string | null
   ref: string
   /** Dossier `chats/<ref>` complet. */
@@ -198,7 +198,7 @@ function readProjectRoot(dir: string): string | null {
  * vide dans OWUI. Le scan ne lit que les petites métas ; le transcript est lu
  * plus tard, seulement pour ce qui a changé.
  */
-export function scanConversations(profiles: ProfileRef[], projectsRoot: string[] = []): ScanResult {
+export function scanConversations(profiles: ProfileRef[]): ScanResult {
   const candidates: Candidate[] = []
   let skipped = 0
   const errors: string[] = []
@@ -254,10 +254,7 @@ export function scanConversations(profiles: ProfileRef[], projectsRoot: string[]
         }
 
         const projectRoot = readProjectRoot(dir)
-        const verdict =
-          projectRoot === null || projectsRoot.length === 0
-            ? null
-            : normalizeProjectPath(projectRoot, projectsRoot)
+        const verdict = projectRoot === null ? null : normalizeProjectPath(projectRoot)
         candidates.push({
           profile: profile.name,
           profileDir: profile.dir,
@@ -797,8 +794,6 @@ export interface ImportOptions {
   profile?: string
   maxChars?: number
   maxMessages?: number
-  /** Racines autorisées pour valider `run-state.json` → `projectPath`. */
-  projectsRoot?: string[]
   /** Profil actif du pont : lui seul est lié. */
   currentProfile?: string
   /** Bindings à alimenter ; absent en simulation ou si le fichier est illisible. */
@@ -848,7 +843,7 @@ async function runImportUnlocked(options: ImportOptions): Promise<ImportOutcome>
     throw new Error(`aucun profil ne correspond à « ${options.profile ?? ''} »`)
   }
 
-  const scan = scanConversations(profiles, options.projectsRoot ?? [])
+  const scan = scanConversations(profiles)
   const candidates =
     options.limit !== undefined && options.limit >= 0
       ? scan.candidates.slice(0, options.limit)

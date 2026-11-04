@@ -8,8 +8,9 @@
  * dossier.
  *
  * Deux règles de sûreté :
- * - un chemin n'est accepté que s'il est absolu, sans `..`, existant, et sous
- *   l'une des racines autorisées (`projectsRoot`) ;
+ * - un chemin n'est accepté que s'il est absolu, sans `..` et existant ; aucun
+ *   dossier n'est exclu a priori (`projectsRoot` ne sert qu'au point de départ
+ *   du sélecteur) ;
  * - un `bindings.json` illisible n'est JAMAIS réécrit : le pont démarre, mais
  *   refuse les chats non liés. Écraser un fichier corrompu effacerait tous les
  *   bindings d'un coup.
@@ -56,23 +57,16 @@ export function samePath(a: string, b: string): boolean {
     : norm(a) === norm(b)
 }
 
-function isInside(root: string, candidate: string): boolean {
-  const rel = path.relative(path.resolve(root), candidate)
-  if (rel === '') return true
-  if (path.isAbsolute(rel)) return false
-  return rel !== '..' && !rel.startsWith(`..${path.sep}`)
-}
-
 /**
  * Valide et normalise un chemin de projet.
  *
+ * Aucune racine n'est imposée : tout dossier absolu existant convient.
  * `isDirectory` est injectable pour tester sans créer de dossiers ; le défaut
  * interroge le disque. Le chemin rendu utilise des `/` : c'est la forme écrite
  * dans `bindings.json`, lisible et stable entre Windows et un terminal bash.
  */
 export function normalizeProjectPath(
   input: unknown,
-  roots: string[],
   isDirectory: (dir: string) => boolean = defaultIsDirectory,
 ): PathVerdict {
   if (typeof input !== 'string' || !input.trim()) {
@@ -92,13 +86,6 @@ export function normalizeProjectPath(
   }
 
   const resolved = path.resolve(raw)
-  if (!roots.some(root => isInside(root, resolved))) {
-    return {
-      ok: false,
-      reason: `« ${resolved} » est hors des racines autorisées : ${roots.join(', ')}`,
-    }
-  }
-
   if (!isDirectory(resolved)) {
     return { ok: false, reason: `le dossier n'existe pas : ${resolved}` }
   }

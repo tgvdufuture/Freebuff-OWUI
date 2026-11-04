@@ -173,6 +173,45 @@ test('au-delà de la limite, le projet suivant est refusé sans tuer les session
   assert.equal(encore.text, 'encore')
 })
 
+test('la limite se compte PAR COMPTE : un second compte a ses propres sessions', async () => {
+  FakeSession.opens = 0
+  let account = 'compte-a'
+  const host = new SessionHost(
+    async (dir, _ref, profile) => new FakeSession(dir, prompt => `${profile}:${prompt}`),
+    fakeSettings(),
+    {},
+    { limit: 2, account: () => account },
+  )
+
+  await host.use(PROJECT, s => s.send('un', () => {}))
+  await host.use(OTHER, s => s.send('deux', () => {}))
+  await assert.rejects(
+    host.use(THIRD, s => s.send('trois', () => {})),
+    (error: unknown) => error instanceof TooManySessions && error.limit === 2,
+  )
+
+  // Un autre compte n'hérite pas des sessions du premier : ses slots sont vides.
+  account = 'compte-b'
+  const b = await host.use(THIRD, s => s.send('trois', () => {}))
+  assert.equal(b.text, 'compte-b:trois')
+  assert.equal(host.aliveCount(), 3, 'trois CLI vivantes, mais réparties entre deux comptes')
+  assert.equal(host.aliveCount('compte-a'), 2)
+  assert.equal(host.aliveCount('compte-b'), 1)
+
+  // Les sessions du premier compte continuent de répondre, sans en ouvrir une.
+  const a = await host.use(PROJECT, s => s.send('encore', () => {}))
+  assert.equal(a.text, 'compte-a:encore')
+  assert.equal(FakeSession.opens, 3)
+
+  // Le plafond est le même pour CHAQUE compte.
+  await host.use('D:/code/delta', s => s.send('quatre', () => {}))
+  await assert.rejects(host.use('D:/code/epsilon', s => s.send('cinq', () => {})), TooManySessions)
+  assert.deepEqual(
+    host.statuses().map(status => status.account),
+    ['compte-a', 'compte-a', 'compte-b', 'compte-b'],
+  )
+})
+
 test('une erreur de tour ne bloque ni le projet ni les autres', async () => {
   FakeSession.opens = 0
   const host = new SessionHost(async dir => new FakeSession(dir, p => p), fakeSettings())

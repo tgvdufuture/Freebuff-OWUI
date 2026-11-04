@@ -30,6 +30,8 @@ export interface SessionSnapshot {
   alive: boolean
   chatRef: string | null
   projectDir: string
+  /** Compte (profil) de la CLI, quand le pont en tient plusieurs. */
+  account?: string
 }
 
 /** Quota restant lu sur l'écran de la TUI — jamais deviné. */
@@ -129,7 +131,8 @@ export function renderDiagnosticPage(snapshot: HealthSnapshot): string {
             .map(
               item =>
                 `pid ${String(item.pid)}, vivante : ${yesNo(item.alive)}, ` +
-                `chat ${escapeHtml(item.chatRef ?? '—')}, projet ${escapeHtml(item.projectDir)}`,
+                `chat ${escapeHtml(item.chatRef ?? '—')}, compte ${escapeHtml(item.account ?? '—')}, ` +
+                `projet ${escapeHtml(item.projectDir)}`,
             )
             .join('<br>'),
     ],
@@ -139,7 +142,12 @@ export function renderDiagnosticPage(snapshot: HealthSnapshot): string {
         ? 'aucun depuis le démarrage'
         : `${escapeHtml(refusal.code)} (HTTP ${refusal.status}, ${escapeHtml(new Date(refusal.at).toISOString())})`,
     ],
-    ['Racines projets', escapeHtml(snapshot.projectsRoot.join(', '))],
+    [
+      'Départ sélecteur',
+      snapshot.projectsRoot.length === 0
+        ? 'dossier de l’utilisateur'
+        : escapeHtml(snapshot.projectsRoot.join(', ')),
+    ],
     ['Chats liés', String(snapshot.bindings)],
     [
       'Capture',

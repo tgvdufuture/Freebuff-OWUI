@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { FreebuffSession } from '../src/freebuff/session.ts'
+import { FreebuffSession, SessionRefused } from '../src/freebuff/session.ts'
 
 /**
  * Fausse CLI : elle prend la consigne comme la vraie (une ligne, puis Entrée)
@@ -202,6 +202,68 @@ process.stdin.resume()
 setInterval(() => {}, 1_000)
 `
 
+/**
+ * Fausse CLI dont le COMPTE est à 0 h mais dont l'HEURE de session court
+ * encore : une session déjà payée reste utilisable même quand le bandeau du
+ * compte ne montre plus rien.
+ */
+const RUNNING_HOUR_CLI = String.raw`
+const fs = require('node:fs')
+const path = require('node:path')
+const profile = process.env.FREEBUFF_CONFIG_DIR
+const chatRoot = path.join(profile, 'projects', path.basename(process.cwd()), 'chats')
+const line = (entry) => JSON.stringify(entry) + '\n'
+
+setTimeout(() => {
+  process.stdout.write('\r\n10/17 • max · Chat: New chat0/12 hours remaining\r\n╯ 42m left\r\n')
+}, 100)
+
+const dir = path.join(chatRoot, new Date().toISOString().replace(/[:.]/g, '-'))
+fs.mkdirSync(dir, { recursive: true })
+const log = path.join(dir, 'log.jsonl')
+fs.writeFileSync(log, line({ level: 'INFO', timestamp: new Date().toISOString(), msg: '[chat-runtime] started' }))
+const handle = fs.openSync(log, 'a')
+
+let buffer = ''
+let done = false
+
+function take(prompt) {
+  if (done) return
+  done = true
+  fs.writeSync(handle, Buffer.from(line({
+    level: 'INFO', timestamp: new Date().toISOString(),
+    msg: '[send-message] Sending message with sdk run config',
+    data: { runConfig: { promptLength: prompt.length } },
+  })))
+  fs.writeFileSync(
+    path.join(dir, 'chat-messages.json'),
+    JSON.stringify([{ variant: 'ai', isComplete: true, blocks: [{ type: 'text', textType: 'text', content: 'fait' }] }]),
+  )
+}
+
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  for (const char of chunk) {
+    if (char === '\r') {
+      take(buffer.replace(/\s+/g, ' ').trim())
+      buffer = ''
+    } else {
+      buffer += char
+    }
+  }
+})
+process.stdin.resume()
+setInterval(() => {}, 1_000)
+`
+
+/** Fausse CLI à 0 h SANS heure en cours : aucun tour ne peut démarrer. */
+const EXHAUSTED_CLI = String.raw`
+setTimeout(() => {
+  process.stdout.write('\r\n0/12 hours remaining\r\n╯ 0m left\r\n')
+}, 100)
+setInterval(() => {}, 1_000)
+`
+
 const root = mkdtempSync(path.join(os.tmpdir(), 'fb-session-'))
 const bin = path.join(root, 'fausse-cli.cjs')
 writeFileSync(bin, FAKE_CLI, 'utf8')
@@ -209,6 +271,10 @@ const ingestingBin = path.join(root, 'fausse-cli-digestion.cjs')
 writeFileSync(ingestingBin, INGESTING_CLI, 'utf8')
 const paintingBin = path.join(root, 'fausse-cli-peinture.cjs')
 writeFileSync(paintingBin, PAINTING_CLI, 'utf8')
+const runningHourBin = path.join(root, 'fausse-cli-heure-en-cours.cjs')
+writeFileSync(runningHourBin, RUNNING_HOUR_CLI, 'utf8')
+const exhaustedBin = path.join(root, 'fausse-cli-quota-epuise.cjs')
+writeFileSync(exhaustedBin, EXHAUSTED_CLI, 'utf8')
 
 test('l’écran alimente un flux fin, avant que le transcript ne reçoive quoi que ce soit', async () => {
   const projectDir = path.join(root, 'projet-peinture')
@@ -263,6 +329,40 @@ test('un long prompt est soumis après que la TUI a fini de le digérer', async 
   } finally {
     session.stop()
   }
+})
+
+test('un compte à 0 h n’empêche pas un tour dans l’heure déjà payée', async () => {
+  const projectDir = path.join(root, 'projet-heure-en-cours')
+  // L'ancien classement refusait la session au démarrage (0/12), donc tous les
+  // messages des 42 min restantes.
+  const session = await FreebuffSession.start({
+    projectDir,
+    profileDir: path.join(root, 'profil-heure-en-cours'),
+    bin: process.execPath,
+    args: [runningHourBin],
+    bootMs: 1_500,
+  })
+
+  try {
+    const result = await session.send('un message dans l’heure en cours', () => {})
+    assert.equal(result.finish, 'ok')
+  } finally {
+    session.stop()
+  }
+})
+
+test('un compte à 0 h sans heure en cours refuse toujours la session', async () => {
+  await assert.rejects(
+    () =>
+      FreebuffSession.start({
+        projectDir: path.join(root, 'projet-quota-epuise'),
+        profileDir: path.join(root, 'profil-quota-epuise'),
+        bin: process.execPath,
+        args: [exhaustedBin],
+        bootMs: 1_500,
+      }),
+    (error: unknown) => error instanceof SessionRefused && error.code === 'quota_exhausted',
+  )
 })
 
 test('un prompt est accepté sur le journal de la CLI, sans message `user`', async () => {

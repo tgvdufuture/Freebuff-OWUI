@@ -16,9 +16,10 @@
  * 2. **Aucun redémarrage silencieux.** Si une session meurt, on le dit : la
  *    relancer consommerait une nouvelle session de quota sans que personne ne
  *    l'ait demandé.
- * 3. **Une limite.** Chaque session ouverte coûte une heure de quota : au-delà
- *    de `limit` sessions vivantes, on refuse explicitement plutôt que d'en
- *    ouvrir une de plus dans le dos de l'utilisateur.
+ * 3. **Une limite PAR COMPTE.** Chaque session ouverte coûte une heure de quota :
+ *    au-delà de `limit` sessions vivantes sur un même profil, on refuse
+ *    explicitement plutôt que d'en ouvrir une de plus dans le dos de
+ *    l'utilisateur. Les sessions d'un autre compte ne comptent pas.
  * 4. **Un `settings.json` partagé.** Le modèle est global au profil : son
  *    écriture est protégée par une section critique et n'a lieu qu'à
  *    l'OUVERTURE d'une session. Une session déjà lancée garde son modèle ; un
@@ -37,7 +38,7 @@ export interface ModelChoice {
 
 /** L'écriture de `freebuffModel`/`freebuffModelKey`, injectée pour tester sans profil. */
 export interface ModelWriter {
-  set(choice: ModelChoice): void
+  set(choice: ModelChoice, profileDir: string): void
 }
 
 /** Étiquette unique d'un modèle : la clé l'emporte, comme dans `settings.json`. */
@@ -73,10 +74,11 @@ export class SessionStuck extends Error {
 export class TooManySessions extends Error {
   readonly limit: number
 
-  constructor(limit: number, projectDir: string) {
+  constructor(limit: number, projectDir: string, account = '') {
+    const scope = account === '' ? '' : ` pour ${path.basename(account)}`
     super(
-      `le pont tient déjà ${String(limit)} sessions Freebuff vivantes (la limite). Termine un projet ` +
-        `(ou redémarre le pont) avant d'en ouvrir une pour ${projectDir}.`,
+      `la limite de ${String(limit)} sessions Freebuff vivantes par compte est atteinte${scope}. ` +
+        `Termine une session de ce compte avant d'en ouvrir une pour ${projectDir}.`,
     )
     this.name = 'TooManySessions'
     this.limit = limit
@@ -126,6 +128,16 @@ export interface SessionStatus {
   alive: boolean
   chatRef: string | null
   projectDir: string
+  /** Compte (profil) sur lequel cette CLI tourne — elle n'en change jamais. */
+  account: string
+  /**
+   * `true` dès que CETTE CLI a reçu une consigne de CONVERSATION.
+   *
+   * `chatRef` ne suffit pas : un appel interne d'OpenWebUI (génération de
+   * requêtes RAG, de titre…) ouvre la session et le pose. Ce qu'on veut savoir,
+   * c'est si le fil de l'utilisateur est déjà dans la CLI.
+   */
+  threadFed: boolean
 }
 
 /** Ce que l'arrêt a réellement fait, pour ne pas mentir sur un PID survivant. */
@@ -142,22 +154,33 @@ export interface SessionHooks {
 }
 
 export interface SessionHostOptions {
-  /** Sessions vivantes simultanées (projets différents). Défaut : 3. */
+  /** Sessions vivantes simultanées PAR COMPTE. Défaut : 3. */
   limit?: number
+  /**
+   * Compte sur lequel naîtrait une session NEUVE (le profil courant).
+   * Une session déjà ouverte garde le sien : basculer ne la déplace pas.
+   */
+  account?: () => string
 }
 
 interface Entry {
   session: AgentSession
+  /** Compte (profil) de la CLI — une session ne change jamais de compte. */
+  account: string
   model: ModelChoice | null
   /** Conversation reprise à l'ouverture (`--continue`), ou `null`. */
   continueRef: string | null
+  /** Voir `SessionStatus.threadFed`. */
+  threadFed: boolean
 }
 
 export class SessionHost {
-  private readonly open: (projectDir: string, continueRef?: string) => Promise<AgentSession>
+  private readonly open: (projectDir: string, continueRef: string | undefined, profileDir: string) => Promise<AgentSession>
   private readonly settings: ModelWriter
   private readonly hooks: SessionHooks
   private readonly limit: number
+  /** Profil d'une session qui s'ouvre maintenant ; `''` sans compte déclaré. */
+  private readonly currentAccount: () => string
   private readonly entries = new Map<string, Entry>()
   /**
    * Chaînes de sérialisation PAR PROJET — tenues à part des entrées pour qu'une
@@ -169,7 +192,7 @@ export class SessionHost {
   private boot: Promise<unknown> = Promise.resolve()
 
   constructor(
-    open: (projectDir: string, continueRef?: string) => Promise<AgentSession>,
+    open: (projectDir: string, continueRef: string | undefined, profileDir: string) => Promise<AgentSession>,
     settings: ModelWriter,
     hooks: SessionHooks = {},
     options: SessionHostOptions = {},
@@ -178,13 +201,26 @@ export class SessionHost {
     this.settings = settings
     this.hooks = hooks
     this.limit = options.limit ?? 3
+    this.currentAccount = options.account ?? (() => '')
   }
 
-  /** Nombre de sessions vivantes (la limite ne compte que celles-là). */
-  aliveCount(): number {
+  /**
+   * Nombre de sessions vivantes — toutes, ou celles d'UN compte quand il est
+   * donné. La limite ne compte que les vivantes, et compte PAR COMPTE.
+   */
+  aliveCount(account?: string): number {
     let count = 0
-    for (const { session } of this.entries.values()) if (session.alive) count += 1
+    for (const entry of this.entries.values()) {
+      if (!entry.session.alive) continue
+      if (account !== undefined && entry.account !== account) continue
+      count += 1
+    }
     return count
+  }
+
+  /** Compte de la session d'une cible, ou `null` si aucune session ne correspond. */
+  accountOf(target: SessionTarget): string | null {
+    return this.matching(target)[0]?.account ?? null
   }
 
   /**
@@ -194,8 +230,12 @@ export class SessionHost {
    * il faut une sonde (`probeQuota`), qui lance une TUI sans consigne.
    */
   quota(target?: SessionTarget): QuotaView | null {
-    for (const { session } of this.matching(target)) {
-      if (session.quota?.found === true) return session.quota
+    // Le quota est celui d'un COMPTE : après une bascule, une session restée
+    // sur l'ancien profil ne doit pas repeindre la barre du nouveau.
+    const account = this.currentAccount()
+    for (const entry of this.matching(target)) {
+      if (entry.account !== account) continue
+      if (entry.session.quota?.found === true) return entry.session.quota
     }
     return null
   }
@@ -204,8 +244,8 @@ export class SessionHost {
    * Sessions visibles pour une cible : la sienne, ou celles du projet quand la
    * cible est un simple chemin, ou toutes quand il n'y en a pas.
    */
-  private matching(target?: SessionTarget): Array<{ session: AgentSession }> {
-    const out: Array<{ session: AgentSession }> = []
+  private matching(target?: SessionTarget): Entry[] {
+    const out: Entry[] = []
     const ref = target === undefined ? null : targetOf(target)
     for (const [key, entry] of this.entries) {
       if (!entry.session.alive) continue
@@ -235,9 +275,9 @@ export class SessionHost {
 
   /** Toutes les sessions connues, vivantes ou non (ordre d'ouverture). */
   statuses(): SessionStatus[] {
-    return [...this.entries].map(([key, { session }]) => {
+    return [...this.entries].map(([key, { session, threadFed, account }]) => {
       const { pid, alive, chatRef, projectDir } = session
-      return { key, pid, alive, chatRef, projectDir }
+      return { key, pid, alive, chatRef, projectDir, threadFed, account }
     })
   }
 
@@ -272,8 +312,28 @@ export class SessionHost {
       const entry = this.entries.get(ref.key)
       if (entry === undefined) throw new SessionGone()
       const { pid, alive, chatRef } = entry.session
-      return { key: ref.key, pid, alive, chatRef, projectDir: entry.session.projectDir }
+      return {
+        key: ref.key,
+        pid,
+        alive,
+        chatRef,
+        projectDir: entry.session.projectDir,
+        threadFed: entry.threadFed,
+        account: entry.account,
+      }
     })
+  }
+
+  /**
+   * Retient que la CLI porte désormais le fil de la conversation.
+   *
+   * Appelé seulement pour une vraie consigne : un appel interne d'OpenWebUI
+   * passe par la même session mais ne dit rien du fil de l'utilisateur.
+   */
+  markThreadFed(target: SessionTarget): void {
+    const { key } = targetOf(target)
+    const entry = this.entries.get(key)
+    if (entry !== undefined) entry.threadFed = true
   }
 
   /**
@@ -289,16 +349,34 @@ export class SessionHost {
       const current = this.entries.get(key)
       if (current !== undefined && current.session.alive) {
         const { pid, alive, chatRef } = current.session
-        return { key, pid, alive, chatRef, projectDir: current.session.projectDir }
+        return {
+          key,
+          pid,
+          alive,
+          chatRef,
+          projectDir: current.session.projectDir,
+          threadFed: current.threadFed,
+          account: current.account,
+        }
       }
 
       if (current !== undefined) this.entries.delete(key)
-      if (this.aliveCount() >= this.limit) throw new TooManySessions(this.limit, projectDir)
-
-      const session = await this.withBoot(async () => this.open(projectDir))
-      this.entries.set(key, { session, model: current?.model ?? null, continueRef: null })
-      const { pid, alive, chatRef } = session
-      return { key, pid, alive, chatRef, projectDir: session.projectDir }
+      // Une relance est une session NEUVE : elle naît sur le compte courant,
+      // et ne consomme qu'un slot de CE compte.
+      return this.withBoot(async () => {
+        const account = this.currentAccount()
+        if (this.aliveCount(account) >= this.limit) throw new TooManySessions(this.limit, projectDir, account)
+        const session = await this.open(projectDir, undefined, account)
+        this.entries.set(key, {
+          session,
+          account,
+          model: current?.model ?? null,
+          continueRef: null,
+          threadFed: false,
+        })
+        const { pid, alive, chatRef } = session
+        return { key, pid, alive, chatRef, projectDir: session.projectDir, threadFed: false, account }
+      })
     })
   }
 
@@ -363,7 +441,8 @@ export class SessionHost {
       return entry.session
     }
 
-    if (this.aliveCount() >= this.limit) throw new TooManySessions(this.limit, projectDir)
+    const account = this.currentAccount()
+    if (this.aliveCount(account) >= this.limit) throw new TooManySessions(this.limit, projectDir, account)
 
     // Ouverture sérialisée GLOBALEMENT : le modèle s'écrit dans un fichier
     // partagé, puis la CLI démarre avec cette valeur.
@@ -373,11 +452,21 @@ export class SessionHost {
         if (!again.session.alive) throw new SessionGone()
         return again.session
       }
-      if (this.aliveCount() >= this.limit) throw new TooManySessions(this.limit, projectDir)
-      if (model !== undefined) this.settings.set(model)
-      const session = await this.open(projectDir, continueRef)
+      // Relu ici : une bascule pendant l'attente change le compte de la
+      // session qui va naître, donc les slots déjà pris.
+      const birth = this.currentAccount()
+      if (this.aliveCount(birth) >= this.limit) throw new TooManySessions(this.limit, projectDir, birth)
+      if (model !== undefined) this.settings.set(model, birth)
+      const session = await this.open(projectDir, continueRef, birth)
       if (continueRef !== undefined) this.hooks.onResume?.(continueRef, session.pid)
-      this.entries.set(key, { session, model: model ?? null, continueRef: continueRef ?? null })
+      this.entries.set(key, {
+        session,
+        account: birth,
+        model: model ?? null,
+        continueRef: continueRef ?? null,
+        // `--continue` porte déjà le fil de la conversation reprise.
+        threadFed: continueRef !== undefined,
+      })
       return session
     })
   }
@@ -390,6 +479,9 @@ export class SessionHost {
   private async switchModel(key: string, projectDir: string, model: ModelChoice): Promise<void> {
     const previous = this.entries.get(key)
     if (previous === undefined) return
+    // La session garde SON compte : changer de modèle ne fait pas traverser
+    // un compte, et `settings.json` s'écrit chez lui.
+    const account = previous.account
     const from = previous.model === null ? '' : choiceIdentity(previous.model)
     const stopped = previous.session.stop()
     if (stopped.remaining) throw new SessionStuck(previous.session.pid)
@@ -398,10 +490,10 @@ export class SessionHost {
     this.hooks.onModelSwitch?.(from, choiceIdentity(model), previous.session.pid)
 
     const session = await this.withBoot(async () => {
-      this.settings.set(model)
-      return this.open(projectDir)
+      this.settings.set(model, account)
+      return this.open(projectDir, undefined, account)
     })
-    this.entries.set(key, { session, model, continueRef: null })
+    this.entries.set(key, { session, account, model, continueRef: null, threadFed: false })
   }
 
   /**
@@ -413,14 +505,18 @@ export class SessionHost {
   private async switchConversation(key: string, projectDir: string, continueRef: string): Promise<void> {
     const previous = this.entries.get(key)
     if (previous === undefined) return
+    // `--continue` lit le transcript du profil : la session garde son compte,
+    // même si l'utilisateur a basculé entre-temps.
+    const account = previous.account
     const stopped = previous.session.stop()
     if (stopped.remaining) throw new SessionStuck(previous.session.pid)
 
     this.entries.delete(key)
 
-    const session = await this.withBoot(async () => this.open(projectDir, continueRef))
+    const session = await this.withBoot(async () => this.open(projectDir, continueRef, account))
     this.hooks.onResume?.(continueRef, session.pid)
-    this.entries.set(key, { session, model: previous.model, continueRef })
+    // La conversation reprise porte son propre fil : rien à rejouer ensuite.
+    this.entries.set(key, { session, account, model: previous.model, continueRef, threadFed: true })
   }
 
   /** Une seule écriture de `settings.json` + lancement à la fois, tous projets. */

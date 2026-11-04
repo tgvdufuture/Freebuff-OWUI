@@ -340,7 +340,7 @@ test('chaque projet a son dossier, quel que soit le profil', async () => {
       ],
       client,
       dataFile,
-      { projectsRoot: [root], currentProfile: profileA },
+      { currentProfile: profileA },
     ),
   )
 
@@ -387,7 +387,6 @@ test('un ancien chat de dossier de profil migre vers le dossier du projet', asyn
   const client = new FakeOwui()
   client.chats.set('chat-old', { updatedAt: 123 })
   const options = importOptions([{ name: 'profil', dir: profile }], client, dataFile, {
-    projectsRoot: [root],
     currentProfile: profile,
   })
 
@@ -513,7 +512,7 @@ test('le nom du projet vient de run-state.json, pas du dossier', async () => {
   const dataFile = path.join(mkdtempSync(path.join(os.tmpdir(), 'fb-store-')), 'imports.json')
 
   await runImport(
-    importOptions([{ name: 'profil', dir: profile }], client, dataFile, { projectsRoot: [root] }),
+    importOptions([{ name: 'profil', dir: profile }], client, dataFile),
   )
 
   const payload = [...client.chats.values()][0]?.payload
@@ -535,7 +534,6 @@ test('un chat importé du profil courant est lié à sa conversation CLI', async
 
   const { store } = await runImport(
     importOptions([{ name: 'profil', dir: profile }], client, dataFile, {
-      projectsRoot: [root],
       currentProfile: profile,
       bindings,
     }),
@@ -561,7 +559,6 @@ test('un chat importé du profil courant est lié à sa conversation CLI', async
   // Un second passage ne remplace pas le binding et ne compte aucun nouveau lié.
   const second = await runImport(
     importOptions([{ name: 'profil', dir: profile }], client, dataFile, {
-      projectsRoot: [root],
       currentProfile: profile,
       bindings,
     }),
@@ -586,7 +583,6 @@ test('un chat importé d’un autre profil n’est jamais lié', async () => {
 
   const { store } = await runImport(
     importOptions([{ name: 'profil', dir: profile }], client, dataFile, {
-      projectsRoot: [root],
       currentProfile: otherProfile,
       bindings,
     }),
@@ -596,12 +592,37 @@ test('un chat importé d’un autre profil n’est jamais lié', async () => {
   assert.equal(bindings.count(), 0)
 })
 
-test('sans run-state ou hors des racines, le chat reste une archive', async () => {
+test('un projet hors de D:/code est lié', async () => {
+  const profile = profileDir()
+  const outside = path.join(mkdtempSync(path.join(os.tmpdir(), 'fb-hors-racine-')), 'Ailleurs')
+  mkdirSync(outside, { recursive: true })
+  writeChat(profile, 'Alpha', REF1, {
+    runState: { sessionState: { fileContext: { projectRoot: outside } } },
+  })
+  const bindings = new Bindings(
+    path.join(mkdtempSync(path.join(os.tmpdir(), 'fb-bindings-')), 'bindings.json'),
+  )
+  const client = new FakeOwui()
+  const dataFile = path.join(mkdtempSync(path.join(os.tmpdir(), 'fb-store-')), 'imports.json')
+
+  const { store } = await runImport(
+    importOptions([{ name: 'profil', dir: profile }], client, dataFile, {
+      currentProfile: profile,
+      bindings,
+    }),
+  )
+
+  const item = Object.values(store.items)[0]
+  assert.equal(item?.bound, true)
+  assert.equal(bindings.get(item?.owuiChatId ?? ''), outside.replace(/\\/g, '/'))
+})
+
+test('sans run-state ou dossier absent, le chat reste une archive', async () => {
   const profile = profileDir()
   const { root } = workspace()
   writeChat(profile, 'Alpha', REF1, { runState: null })
   writeChat(profile, 'Alpha', REF2, {
-    runState: { sessionState: { fileContext: { projectRoot: path.join(root, '..', 'Ailleurs') } } },
+    runState: { sessionState: { fileContext: { projectRoot: path.join(root, 'absent') } } },
     mtimeMs: MTIME2,
   })
   const bindings = new Bindings(
@@ -612,7 +633,6 @@ test('sans run-state ou hors des racines, le chat reste une archive', async () =
 
   const { store } = await runImport(
     importOptions([{ name: 'profil', dir: profile }], client, dataFile, {
-      projectsRoot: [root],
       currentProfile: profile,
       bindings,
     }),
@@ -638,7 +658,7 @@ test('le scan valide le projectRoot, y compris au-delà de l’en-tête lu', () 
     },
   })
 
-  const scan = scanConversations([{ name: 'profil', dir: profile }], [root])
+  const scan = scanConversations([{ name: 'profil', dir: profile }])
   const byRef = new Map(scan.candidates.map(candidate => [candidate.ref, candidate]))
 
   assert.equal(byRef.get(REF1)?.projectPath, project.replace(/\\/g, '/'))

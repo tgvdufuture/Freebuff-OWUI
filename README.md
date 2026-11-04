@@ -23,9 +23,10 @@ conversations.
   way. OpenWebUI itself listens on `0.0.0.0:8080` (LAN/PWA use) and has **no
   TLS**.
 - **The quota is yours.** Opening a session costs one hour of the account's free
-  quota, and the bridge keeps at most 3 sessions alive at once (beyond that it
-  answers 429). Quota probes open a TUI without a prompt: they consume nothing,
-  but allow 10 to 45 seconds per profile.
+  quota, and the bridge keeps at most 3 sessions alive per account (beyond that
+  it answers 429). Sessions already open keep their account when you switch, so
+  a running turn is never cut. Quota probes open a TUI without a prompt: they
+  consume nothing, but allow 10 to 45 seconds per profile.
 - **Everything rests on the CLI's format.** The TUI screen, `chat-messages.json`,
   `log.jsonl` and `run-state.json` are all parsed. A CLI update can break the
   bridge.
@@ -107,7 +108,26 @@ immediately instead of lying in the interface.
 
 ## Connecting OpenWebUI
 
-In OpenWebUI → **Settings → Connections**, add an OpenAI connection:
+### The OpenWebUI account
+
+OpenWebUI has its own login, independent of the bridge key. On a fresh instance the
+**first account created becomes the administrator**: open <http://127.0.0.1:8080>, sign
+up with the email and password of your choice, and you are in. Neither the launcher nor
+this repository creates that account, and no password for it is committed.
+
+If you keep those credentials on disk, the convention the scripts under `spike/` read is
+`data/owui-admin.txt` — one field per line, ignored by Git:
+
+```text
+url: http://127.0.0.1:8080
+email: you@example.com
+password: …
+```
+
+OpenWebUI keeps its users in `data/owui/` (its `DATA_DIR`): delete that folder and the
+instance is fresh again, with a new first-user signup.
+
+Then, in OpenWebUI → **Settings → Connections**, add an OpenAI connection:
 
 | Field | Value |
 |---|---|
@@ -143,14 +163,14 @@ start pointless CLI turns.
 | Variable | Default | Purpose |
 |---|---|---|
 | `BRIDGE_PROFILE_DIR` | `~/.config/freebuff` | Freebuff profile in use (skips the probe). |
-| `BRIDGE_PROJECTS_ROOT` | `D:/code` | Roots of bindable projects, separated by `;`. **Set this** if your repositories live elsewhere. |
+| `BRIDGE_PROJECTS_ROOT` | `D:/code` | Where the project picker starts, separated by `;` (also used to look up project names for OpenWebUI folders). **Not a restriction**: any existing absolute folder can be bound. |
 | `FREEBUFF_BIN` | the binary inside the profile, else `~/.config/manicode/freebuff.exe` | Path to the CLI binary. |
 | `BRIDGE_PORT` | `7799` | Bridge port. |
 | `BRIDGE_HOST` | `127.0.0.1` | Bridge listen address. |
 | `BRIDGE_DATA_DIR` | `./data` | Local state (key, bindings, quota, turns). |
 | `BRIDGE_API_KEY` | generated into `data/api-key.txt` | Key expected by `/v1`. |
 | `BRIDGE_STUB` | `1` | `0` = real mode (CLI is driven). |
-| `BRIDGE_MAX_SESSIONS` | `3` | Concurrent CLI sessions. |
+| `BRIDGE_MAX_SESSIONS` | `3` | Concurrent CLI sessions per account. |
 | `BRIDGE_OWUI_URL` | `http://127.0.0.1:8080` | Redirect target (Continue button). |
 | `BRIDGE_OWUI_KEY` | — | OpenWebUI API key for import (Settings → Account → API keys). A session token will not do: it expires. |
 | `BRIDGE_IMPORT_INTERVAL_MS` | `900000` (15 min) | Sync cycle; `0` disables it. |

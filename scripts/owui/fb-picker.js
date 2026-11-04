@@ -2,8 +2,9 @@
  * Dossier du projet, ouvert depuis le NOM affiché au-dessus de la saisie.
  *
  * Aucun bouton en plus : ce nom devient le point d'entrée. Un clic dessus
- * ouvre l'explorateur de dossiers servi par le pont (`GET /api/projects`, sous
- * `projectsRoot` uniquement), puis `POST /api/bind` modifie le dossier du chat
+ * ouvre l'explorateur de dossiers servi par le pont (`GET /api/projects`,
+ * ouvert sur `projectsRoot` mais sans s'y limiter), puis `POST /api/bind`
+ * modifie le dossier du chat
  * courant — ou `POST /api/bind/pending` quand la conversation n'a pas encore
  * d'id (page d'accueil), le premier message le consomme alors.
  *

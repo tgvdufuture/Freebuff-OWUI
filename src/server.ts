@@ -108,6 +108,20 @@ interface ChatBody {
   tools?: Array<{ type?: string; function?: { name?: string } }>
 }
 
+/**
+ * Appel interne d'OpenWebUI (génération de requêtes RAG, de titre, d'étiquettes…).
+ *
+ * Il porte `metadata.task` et n'est PAS un message de l'utilisateur : il ne doit
+ * ni recevoir le fil rejoué, ni consommer la reprise pour le message suivant.
+ * Sans ça, la tâche RAG ouverte à chaque fichier joint crée la CLI et pose
+ * `chatRef` ; la vraie consigne, arrivée ensuite, repartait alors sans contexte.
+ */
+function isTaskCall(metadata: unknown): boolean {
+  if (typeof metadata !== 'object' || metadata === null) return false
+  const task = (metadata as { task?: unknown }).task
+  return typeof task === 'string' && task.trim() !== ''
+}
+
 function redactHeaders(headers: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(headers)) {
@@ -658,9 +672,10 @@ function textCompletion(
  *
  * OWUI enregistre `folder_id` avant d'envoyer le premier message. Le pont ne
  * devine pas à partir du nom : seuls les dossiers créés par l'import
- * (`projectFolders`) comptent, et le dossier du projet doit exister sous
- * `projectsRoot`. Tout échec rend `null` : l'appelant garde le refus explicite
- * « chat non lié », jamais un 500 pour un OWUI injoignable.
+ * (`projectFolders`) comptent, et le dossier du projet doit exister sous l'un
+ * des points de départ (`projectsRoot`). Tout échec rend `null` : l'appelant
+ * garde le refus explicite « chat non lié », jamais un 500 pour un OWUI
+ * injoignable.
  */
 async function projectFromOwuiFolder(chatId: string): Promise<string | null> {
   const apiKey = resolveOwuiKey(config.dataDir)
@@ -679,7 +694,7 @@ async function projectFromOwuiFolder(chatId: string): Promise<string | null> {
     const candidates = [
       ...new Set(
         config.projectsRoot
-          .map(root => normalizeProjectPath(path.join(root, name), config.projectsRoot))
+          .map(root => normalizeProjectPath(path.join(root, name)))
           .filter((verdict): verdict is { ok: true; path: string } => verdict.ok)
           .map(verdict => verdict.path),
       ),
@@ -716,6 +731,8 @@ async function chatThroughBinding(
     askTool: boolean
     /** Réponse à la carte précédente, livrée en message `tool`. */
     toolAnswer: string | null
+    /** Appel interne d'OpenWebUI : hors conversation (voir `isTaskCall`). */
+    taskCall: boolean
   },
   reply: FastifyReply,
 ): Promise<unknown> {
@@ -846,6 +863,7 @@ async function chatThroughBinding(
           // reprend pas une autre conversation par-dessus.
           resumeRef: null,
           messages: input.messages,
+          taskCall: input.taskCall,
         },
         reply,
       )
@@ -945,6 +963,7 @@ async function chatThroughBinding(
         askTool: input.askTool,
         resumeRef: bindings.resumeRef(input.chatId),
         messages: input.messages,
+        taskCall: input.taskCall,
       },
       reply,
     )
@@ -955,7 +974,7 @@ async function chatThroughBinding(
       return reply.code(400).send(errorBody('envoie un chemin absolu vers un dossier.', 'empty_message'))
     }
 
-    const verdict = normalizeProjectPath(input.prompt, config.projectsRoot)
+    const verdict = normalizeProjectPath(input.prompt)
     if (!verdict.ok) {
       return reply.code(400).send({
         ...errorBody(verdict.reason, 'invalid_project_path'),
@@ -1019,6 +1038,8 @@ async function agentCompletion(
     resumeRef: string | null
     /** Fil OpenWebUI complet : sert à rejouer le contexte dans une CLI neuve. */
     messages: ChatMessage[]
+    /** Appel interne d'OpenWebUI : hors conversation (voir `isTaskCall`). */
+    taskCall: boolean
   },
   reply: FastifyReply,
 ): Promise<unknown> {
@@ -1071,6 +1092,9 @@ async function agentCompletion(
       model,
       continueRef,
     )
+    // Le fil n'entre dans la CLI qu'une fois ce tour ACCEPTÉ : un appel interne
+    // d'OpenWebUI ne doit pas consommer la reprise du message suivant.
+    if (!input.taskCall) run.then(() => host.markThreadFed(ref), () => undefined)
     turns.inFlight.set(input.chatId, { signatures: input.signatures, result: run })
     const clear = (): void => {
       if (turns.inFlight.get(input.chatId)?.result === run) turns.inFlight.delete(input.chatId)
@@ -1142,9 +1166,10 @@ async function agentCompletion(
 
   try {
     const status = await host.ready(ref, model, continueRef)
-    // `chatRef` n'est posé qu'une fois un prompt ACCEPTÉ par la CLI : sans lui,
-    // cette session n'a encore rien reçu, donc rien ne porte le fil.
-    if (status.chatRef === null && continueRef === undefined) {
+    // Le fil manque tant que cette CLI n'a reçu aucune consigne de CONVERSATION.
+    // `chatRef` ne suffit pas : un appel interne d'OpenWebUI (RAG, titre) ouvre
+    // la session et le pose, puis la vraie consigne partait sans aucun contexte.
+    if (!input.taskCall && !status.threadFed && continueRef === undefined) {
       prompt = promptWithContext(input.prompt, input.messages, MAX_PROMPT_CHARS) ?? input.prompt
       if (prompt !== input.prompt) {
         journal.write('context_replay', {
@@ -1400,7 +1425,11 @@ async function agentCompletion(
 
 export interface BridgeOverrides {
   /** Ouvre la session : remplacé par une session factice dans les tests HTTP. */
-  openSession?: (projectDir: string, continueRef?: string) => Promise<AgentSession>
+  openSession?: (
+    projectDir: string,
+    continueRef: string | undefined,
+    profileDir: string,
+  ) => Promise<AgentSession>
   /** Sonde de quota : remplacée dans les tests, qui ne lancent aucune TUI. */
   quotaProbe?: (options: { bin: string; profileDir: string; cwd: string }) => Promise<{
     quota: { found: boolean; remainingHours: number | null; totalHours: number | null; exhausted: boolean }
@@ -1475,18 +1504,20 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
   const journal = new Journal({ dir: path.join(config.dataDir, 'logs') })
   const host = new SessionHost(
     overrides.openSession ??
-      ((projectDir, continueRef) =>
+      ((projectDir, continueRef, profileDir) =>
         FreebuffSession.start({
           projectDir,
-          profileDir: currentProfile,
+          // Le compte de la session : `SessionHost` passe celui de la CLI qui
+          // naît — une session restée sur l'ancien compte ne le suit pas.
+          profileDir,
           // Résolu à chaque ouverture : une bascule change de profil, donc de
           // binaire, sans redémarrer le pont.
-          bin: resolveFreebuffBin(currentProfile),
+          bin: resolveFreebuffBin(profileDir),
           continueRef,
         })),
-    // Écriture paresseuse : après une bascule, le prochain lancement écrit dans
-    // le `settings.json` du NOUVEAU profil, pas dans celui du départ.
-    { set: choice => settingsFor().set(choice) },
+    // Écriture paresseuse : le modèle s'écrit chez le profil de la session qui
+    // RELANCE, jamais dans celui d'un autre compte.
+    { set: (choice, profileDir) => new ModelSettings(path.join(profileDir, 'settings.json')).set(choice) },
     {
       // Une bascule de modèle ferme puis relance la CLI : c'est une session de
       // quota qui s'arrête, ça doit rester lisible dans le journal.
@@ -1494,7 +1525,8 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
       // Reprendre une conversation la relance aussi, avec `--continue`.
       onResume: (ref, pid) => journal.write('session_resume', { ref, pid }),
     },
-    { limit: overrides.maxSessions ?? config.maxSessions },
+    // La limite se compte PAR COMPTE : chaque profil garde ses propres slots.
+    { limit: overrides.maxSessions ?? config.maxSessions, account: () => currentProfile },
   )
   const bindings = new Bindings(overrides.bindingsFile ?? path.join(config.dataDir, 'bindings.json'))
   const bin = (): string => overrides.freebuffBin ?? resolveFreebuffBin(currentProfile)
@@ -1516,7 +1548,6 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
       profiles: profileList(process.env.BRIDGE_IMPORT_PROFILES, os.homedir(), currentProfile),
       client: createOwuiClient({ baseUrl: config.owuiBaseUrl, apiKey }),
       model: process.env.BRIDGE_IMPORT_MODEL?.trim() || DEFAULT_ARCHIVE_MODEL,
-      projectsRoot: config.projectsRoot,
       currentProfile,
       bindings,
     })
@@ -1791,7 +1822,7 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
     if (request.method === 'OPTIONS') return reply.code(204).send()
   })
 
-  /** Dossiers proposés par le sélecteur, sous `projectsRoot` uniquement. */
+  /** Dossiers proposés par le sélecteur, à partir de `projectsRoot`. */
   app.get('/api/projects', async (request, reply) => {
     const query = request.query as { path?: unknown }
     const verdict = browseProjects(
@@ -1824,7 +1855,8 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
     const ref = chatId === null || projectPath === null ? null : sessionRef(chatId, projectPath)
     const live = host.quota(ref ?? undefined)
     if (live !== null) rememberQuota(live, 'session')
-    if (ref !== null) refreshQuotaInSession(ref)
+    // Une session restée sur l'ancien compte ne peint plus la barre du courant.
+    if (ref !== null && host.accountOf(ref) === currentProfile) refreshQuotaInSession(ref)
 
     const left = host.sessionLeft(ref ?? undefined)
     return {
@@ -1856,12 +1888,12 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
   })
 
   /**
-   * Bascule de profil : ferme TOUTES les CLI (elles tournent sur l'ancien
-   * compte) et fait ouvrir les suivantes sur le nouveau.
+   * Bascule de profil : les CLI DÉJÀ ouvertes gardent leur compte et
+   * continuent de répondre ; les sessions ouvertes ensuite naissent sur le
+   * nouveau compte. Aucune CLI n'est fermée, donc un tour en cours va au bout.
    *
-   * Refus si un tour est en cours : couper une CLI en pleine réponse perdrait
-   * le tour et le quota déjà consommé. Le choix ne survit PAS au redémarrage :
-   * au prochain lancement, la sonde redécide (PRD §3.2).
+   * Le choix ne survit PAS au redémarrage : au prochain lancement, la sonde
+   * redécide (PRD §3.2).
    */
   app.post('/api/profile', async (request, reply) => {
     const body = (request.body ?? {}) as { path?: unknown }
@@ -1878,42 +1910,19 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
     if (profileKey(wanted.path) === profileKey(currentProfile)) {
       return { ok: true, changed: false, profile: { ...wanted, current: true }, stopped: 0 }
     }
-    if (turns.inFlight.size > 0) {
-      return reply
-        .code(409)
-        .send(errorBody('un tour est en cours : la bascule fermerait sa CLI', 'profile_switch_busy'))
-    }
-
     const from = currentProfile
-    const stopped = host.stop()
-    const stuck = stopped.filter(entry => entry.remaining)
-    if (stuck.length > 0) {
-      const pids = stuck.map(entry => entry.pid).join(', ')
-      journal.write('profile_switch_stuck', { from, to: wanted.path, pids })
-      return reply
-        .code(409)
-        .send(
-          errorBody(
-            `la CLI ${pids} survit à taskkill : profil inchangé, ferme ce processus puis réessaie`,
-            'profile_switch_stuck',
-          ),
-        )
-    }
-
     currentProfile = wanted.path
-    // Ce qui appartenait à l'ancien compte ne le suit pas : lecture de quota,
-    // questions en attente et pagination des cartes.
+    // Ce qui appartenait à l'ancien compte ne le suit pas : la lecture de
+    // quota. Les questions en attente restent, elles, à leur session.
     quotaReading = null
     quotaRefreshAt = 0
-    turns.panels.clear()
-    turns.stages.clear()
     try {
       fs.rmSync(quotaFile, { force: true })
     } catch {
       // Disque indisponible : la valeur n'est plus affichée, c'est tout.
     }
-    journal.write('profile_switch', { from, to: currentProfile, stopped: stopped.length })
-    return { ok: true, changed: true, profile: { ...wanted, current: true }, stopped: stopped.length }
+    journal.write('profile_switch', { from, to: currentProfile, kept: host.aliveCount() })
+    return { ok: true, changed: true, profile: { ...wanted, current: true }, stopped: 0 }
   })
 
   /**
@@ -2102,7 +2111,7 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
     if (typeof body.chatId !== 'string' || body.chatId.trim() === '') {
       return reply.code(400).send({ error: { message: 'chatId manquant', code: 'no_chat_id' } })
     }
-    const verdict = normalizeProjectPath(body.projectPath, config.projectsRoot)
+    const verdict = normalizeProjectPath(body.projectPath)
     if (!verdict.ok) {
       return reply
         .code(400)
@@ -2129,7 +2138,7 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
    */
   app.post('/api/bind/pending', async (request, reply) => {
     const body = (request.body ?? {}) as { projectPath?: unknown }
-    const verdict = normalizeProjectPath(body.projectPath, config.projectsRoot)
+    const verdict = normalizeProjectPath(body.projectPath)
     if (!verdict.ok) {
       return reply
         .code(400)
@@ -2224,6 +2233,7 @@ export function buildServer(overrides: BridgeOverrides = {}): FastifyInstance {
           chatId,
           askTool: hasAskTool(body.tools) && config.askCard,
           toolAnswer: lastToolAnswer(messages),
+          taskCall: isTaskCall(body.metadata),
         },
         reply,
       )
@@ -2317,12 +2327,12 @@ if (isMain) {
   console.log(
     config.stub
       ? '  Freebuff OWUI — mode stub (aucune CLI pilotée)'
-      : `  Freebuff OWUI — une session Freebuff par projet, ${String(config.maxSessions)} au plus`,
+      : `  Freebuff OWUI — une session Freebuff par conversation, ${String(config.maxSessions)} par compte`,
   )
-  console.log(`  Sessions      : ${String(config.maxSessions)} max (BRIDGE_MAX_SESSIONS)`)
+  console.log(`  Sessions      : ${String(config.maxSessions)} max par compte (BRIDGE_MAX_SESSIONS)`)
   console.log(`  URL OpenWebUI : http://${config.host}:${config.port}/v1`)
   console.log(`  Clé API       : ${config.apiKey}`)
-  console.log(`  Racines       : ${config.projectsRoot.join(', ')}`)
+  console.log(`  Départ sélecteur : ${config.projectsRoot.join(', ') || 'dossier utilisateur'}`)
   console.log(`  Profil        : ${config.profileDir}`)
   console.log(`  Modèles       : ${listExposedModels().length} (dont freebuff-new)`)
   console.log(

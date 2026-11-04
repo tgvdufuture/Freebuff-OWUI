@@ -149,8 +149,26 @@ const NOT_ENOUGH_HOURS = /not enough hours for/i
  */
 const SOME_MODELS_NOTICE = /some models? (?:aren't|are not) available on this connection/gi
 
-export function classifyRefusal(screen: string): RefusalCode | null {
-  if (parseQuota(screen).exhausted) return 'quota_exhausted'
+/**
+ * Ce que l'appelant sait et que l'écran ne dit pas.
+ */
+export interface RefusalContext {
+  /**
+   * Minutes restantes de l'heure DÉJÀ PAYÉE de la session, extrapolées à
+   * l'instant de l'appel. Absent pour une TUI neuve (sonde, démarrage) : le
+   * quota du compte fait alors foi.
+   */
+  hourLeftMinutes?: number
+}
+
+export function classifyRefusal(screen: string, context: RefusalContext = {}): RefusalCode | null {
+  // Le quota du COMPTE peut tomber à 0 pendant que l'heure déjà payée de la
+  // session court encore : elle est débitée d'avance, donc les messages y
+  // marchent jusqu'à son échéance. Le pont écrit lui-même `0/N hours daily`
+  // dans le tampon quand il relit `/model` ; sans cette exception, il refusait
+  // ensuite chaque message d'une session encore en cours.
+  const paidHourRunning = (context.hourLeftMinutes ?? 0) > 0
+  if (parseQuota(screen).exhausted && !paidHourRunning) return 'quota_exhausted'
   if (NOT_ENOUGH_HOURS.test(screen)) return 'not_enough_hours'
   if (CONCURRENT_PATTERNS.some(pattern => pattern.test(screen))) return 'concurrent_sessions'
 

@@ -5,7 +5,6 @@ import path from 'node:path'
 import test from 'node:test'
 import { Bindings, PENDING_TTL_MS, normalizeProjectPath } from '../src/bindings.ts'
 
-const ROOT = 'D:/code'
 const alwaysDir = () => true
 
 function bindingsFile(): string {
@@ -27,43 +26,42 @@ test('un binding écrit hors du pont est relu sans redémarrer', () => {
   assert.equal(live.get('chat-1'), 'D:/code/alpha')
 })
 
-test('un chemin absolu sous une racine autorisée est accepté et normalisé', () => {
-  const verdict = normalizeProjectPath('D:\\code\\mon-projet\\', [ROOT], alwaysDir)
+test('un chemin absolu existant est accepté et normalisé', () => {
+  const verdict = normalizeProjectPath('D:\\code\\mon-projet\\', alwaysDir)
   assert.deepEqual(verdict, { ok: true, path: 'D:/code/mon-projet' })
 })
 
 test('un chemin relatif est refusé', () => {
-  const verdict = normalizeProjectPath('mon-projet', [ROOT], alwaysDir)
+  const verdict = normalizeProjectPath('mon-projet', alwaysDir)
   assert.equal(verdict.ok, false)
   assert.match(verdict.ok ? '' : verdict.reason, /absolu/)
 })
 
 test('un chemin contenant « .. » est refusé même s’il reste sous la racine', () => {
-  const verdict = normalizeProjectPath('D:/code/alpha/../beta', [ROOT], alwaysDir)
+  const verdict = normalizeProjectPath('D:/code/alpha/../beta', alwaysDir)
   assert.equal(verdict.ok, false)
   assert.match(verdict.ok ? '' : verdict.reason, /\.\./)
 })
 
-test('un chemin hors des racines autorisées est refusé avec la liste', () => {
-  const verdict = normalizeProjectPath('D:/autre/projet', [ROOT], alwaysDir)
-  assert.equal(verdict.ok, false)
-  assert.match(verdict.ok ? '' : verdict.reason, /D:\/code/)
+test('un chemin hors de D:/code est accepté', () => {
+  const verdict = normalizeProjectPath('D:/autre/projet', alwaysDir)
+  assert.deepEqual(verdict, { ok: true, path: 'D:/autre/projet' })
 })
 
 test('un dossier inexistant est refusé', () => {
-  const verdict = normalizeProjectPath('D:/code/fantome', [ROOT], () => false)
+  const verdict = normalizeProjectPath('D:/code/fantome', () => false)
   assert.equal(verdict.ok, false)
   assert.match(verdict.ok ? '' : verdict.reason, /n'existe pas/)
 })
 
 test('un chemin vide ou non textuel est refusé', () => {
-  assert.equal(normalizeProjectPath('   ', [ROOT], alwaysDir).ok, false)
-  assert.equal(normalizeProjectPath(null, [ROOT], alwaysDir).ok, false)
-  assert.equal(normalizeProjectPath(42, [ROOT], alwaysDir).ok, false)
+  assert.equal(normalizeProjectPath('   ', alwaysDir).ok, false)
+  assert.equal(normalizeProjectPath(null, alwaysDir).ok, false)
+  assert.equal(normalizeProjectPath(42, alwaysDir).ok, false)
 })
 
 test('les guillemets autour d’un chemin collé sont tolérés', () => {
-  assert.deepEqual(normalizeProjectPath('"D:/code/alpha"', [ROOT], alwaysDir), {
+  assert.deepEqual(normalizeProjectPath('"D:/code/alpha"', alwaysDir), {
     ok: true,
     path: 'D:/code/alpha',
   })

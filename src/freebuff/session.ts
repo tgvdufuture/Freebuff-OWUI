@@ -332,7 +332,9 @@ export class FreebuffSession implements AgentSession {
     const fresh = [...dirsOf(chatRoot)].filter(name => !known.has(name))
     if (fresh.length === 1 && fresh[0] !== undefined) session.chatBootDir = path.join(chatRoot, fresh[0])
 
-    const refusal = classifyRefusal(session.screen.value)
+    const refusal = classifyRefusal(session.screen.value, {
+      hourLeftMinutes: session.hourLeftMinutes(),
+    })
     if (refusal) {
       session.stop()
       throw new SessionRefused(refusal)
@@ -420,6 +422,19 @@ export class FreebuffSession implements AgentSession {
     return this.left
   }
 
+  /**
+   * Minutes restantes de l'heure payée, extrapolées à l'instant présent.
+   *
+   * Le pied de la TUI n'est pas réécrit chaque seconde : la dernière valeur lue
+   * baisse donc avec l'horloge (comme la barre d'OpenWebUI). 0 quand aucune
+   * heure n'a été vue ou quand elle est finie — c'est ce qui rend le quota du
+   * compte bloquant.
+   */
+  private hourLeftMinutes(): number {
+    if (this.left === null) return 0
+    return Math.max(0, this.left.minutes - (Date.now() - this.left.at) / 60_000)
+  }
+
   /** La TUI est laissée vivante jusqu'à un arrêt explicite. */
   stop(): StopResult {
     this.stopping = true
@@ -456,7 +471,9 @@ export class FreebuffSession implements AgentSession {
     // pas une nouvelle consigne.
     if (this.pending !== null) return this.answer(text, onDelta, onReasoning)
 
-    const refusal = classifyRefusal(this.screen.value)
+    const refusal = classifyRefusal(this.screen.value, {
+      hourLeftMinutes: this.hourLeftMinutes(),
+    })
     if (refusal) return { text: '', reasoning: '', finish: 'refused', refusal }
 
     // Le dossier est reconnu par la CONSIGNE écrite, plus par « le plus
@@ -493,7 +510,9 @@ export class FreebuffSession implements AgentSession {
           accepted = true
           break
         }
-        const shown = classifyRefusal(this.screen.value)
+        const shown = classifyRefusal(this.screen.value, {
+          hourLeftMinutes: this.hourLeftMinutes(),
+        })
         if (shown) return { text: '', reasoning: '', finish: 'refused', refusal: shown }
       }
     }

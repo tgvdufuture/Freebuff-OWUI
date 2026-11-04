@@ -126,7 +126,6 @@ try {
     limit: args.limit,
     maxChars: numberFromEnv('BRIDGE_IMPORT_MAX_CHARS'),
     maxMessages: numberFromEnv('BRIDGE_IMPORT_MAX_MESSAGES'),
-    projectsRoot: config.projectsRoot,
     currentProfile,
     bindings,
     log: line => console.log(line),
